@@ -4,41 +4,13 @@ Created on Tue Jun 22 14:46:48 2021
 
 @author: Lucas
 """
-import sys, datetime, urllib.request, re, os, io
+import datetime, urllib.request, re, sqlite3, html.parser
 FL_Folder = "C:\\Users\\Lucas\\source\\Python\\YGO\\FL_List"
 Test_Output = FL_Folder + "\\Output\\output.txt"
 Test_Page = "C:\\Users\\Lucas\\source\\Python\\YGO\\FL_List\\Test\\Forbidden & Limited Card List Yu-Gi-Oh! TRADING CARD GAME.htm"
 Status_Enumerable = ["Forbidden", "Limited", "Semi-Limited", "Unlimited"]
-
-def PrintTextFile(FilePath: str, FileContents: str, OverwritePrevious = False):
-    
-    ## Submethod to rename a duplicate file
-    def Rename_Duplicate(Savepath):
-        
-        ## Sub-Submethod to get current working directory of the parent
-        def Get_Parent_Directory(path = os.getcwd()): return path.split('\\')[:-1]
-        
-        duplicate_copy_counter = []
-        file_array = Savepath.split('\\')[-1].split('.')
-        
-        if len(file_array) <= 1: 
-            raise Exception(message = 'Error in \'Rename_Duplicate\'; \'Savepath\' must be splittable by \'.\'')
-            
-        filename_regex = re.compile(file_array[0] + '\d*')
-        
-        for list_file in os.listdir('\\'.join(Savepath.split('\\')[:-1])):
-            if re.match(filename_regex, list_file.split('.')[0]): 
-                duplicate_copy_counter.append(list_file)
-                
-        return '\\'.join(Get_Parent_Directory(Savepath)) + '\\' + file_array[0] + str(len(duplicate_copy_counter)) + '.' + file_array[1]
-    
-    ## Rename the duplicate file if we don't want to overwrite
-    if(not OverwritePrevious): FilePath = Rename_Duplicate(FilePath)
-    
-    ## Write the file contents
-    with io.open(FilePath, "w+", encoding="utf-8") as TargetFile: TargetFile.write(FileContents)
-    
-    return
+dbpath = "C:\\Users\\Lucas\\source\\Python\\YGO\\FL_List\\FL_List.db"
+html_parser = html.parser.HTMLParser()
 
 class FL_Entry:
     Type = None
@@ -47,29 +19,32 @@ class FL_Entry:
     Status_Traditional = None
     Remarks = None
     Link = None
+    Effective_From = None
     
     def ToTuple(self):
-        return(
-            self.Type,
-            self.Name,
+        return (
+            html_parser.unescape(self.Type),
+            html_parser.unescape(self.Name),
             self.Status_Advanced,
             self.Status_Traditional,
-            self.Remarks,
-            self.Link
+            html_parser.unescape(self.Remarks) if self.Remarks is not None else self.Remarks,
+            html_parser.unescape(self.Link),
+            self.Effective_From.isoformat()
             )
     
-    def ToPropertyTyples(self):
+    def ToPropertyTuple(self):
         for(index, property) in self.Properties:
             yield(self.Name, index, property)
     
     def ToString(self):
-        return "Type: {cTyp}\nName: {cNam}\nAdvanced: {cAdv}\nTraditional: {cTra}\nRemarks: {cRem}\nLink: {cLnk}\n".format(
-            cTyp = self.Type, 
-            cNam = self.Name, 
+        return "Type: {cTyp}\nName: {cNam}\nAdvanced: {cAdv}\nTraditional: {cTra}\nRemarks: {cRem}\nLink: {cLnk}\nEffective From: {cEff}\n".format(
+            cTyp = html_parser.unescape(self.Type), 
+            cNam = html_parser.unescape(self.Name), 
             cAdv = self.Status_Advanced, 
             cTra = self.Status_Traditional,
-            cRem = self.Remarks,
-            cLnk = self.Link
+            cRem = html_parser.unescape(self.Remarks) if len(self.Remarks) > 0 else self.Remarks,
+            cLnk = html_parser.unescape(self.Link),
+            cEff = self.Effective_From.isoformat()
             )
 
 def GetCurrentListHTML():
@@ -83,7 +58,6 @@ def ReadListHTMLFromFilepath(Filepath):
     returnstring = ""
     with open(Filepath, encoding="utf8") as f:
         returnstring = f.read()
-    PrintTextFile(Test_Output, returnstring, OverwritePrevious = True)
     return returnstring
 
 def ParseHTML(PageHTML):
@@ -107,13 +81,16 @@ def ParseHTML(PageHTML):
                               "<td.*?>(.*?)<\/td>.*?" +
                               "<td.*?>(.*?)<\/td>.*?" +
                               "<td.*?>(.*?)<\/td>.*?", Entry, re.MULTILINE|re.DOTALL)
-        
+
         ## Make sure the entry obtains a full set of data
         if(EntryData is None):
             raise Exception("EntryData is None\nEntries done: " + str(len(FL_List)) + "\n")
         elif(len(EntryData.groups()) < 6):
             raise Exception("EntryData is too small")
-        elif(EntryData.group(1) == '&nbsp;' or EntryData.group(1) == 'Card Type'):
+        elif(EntryData.group(1) == '&nbsp;' or 
+             EntryData.group(1) == 'Card Type' or 
+             EntryData.group(1) == '' or 
+             EntryData.group(1) == '\xa0'):
             pass
         else:
             ## Replace '&nbsp;' with an empty string
@@ -136,7 +113,11 @@ def ParseHTML(PageHTML):
             else: FLE.Status_Traditional = 3
             
             ## Remarks column
-            FLE.Remarks = EntryData.group(5)
+            if "span" in EntryData.group(5):
+                FilteredRemarks = re.search("<span>(?P<rem>.*?)<\/span>", EntryData.group(5))
+                FLE.Remarks = FilteredRemarks.group('rem')
+            else:
+                FLE.Remarks = EntryData.group(5)
             
             ## Href Link
             hrefLink = re.search('href="(?P<hrefLink>.*?)"', EntryData.group(6))
@@ -149,11 +130,82 @@ def ParseHTML(PageHTML):
                       )
                 break
             
+            ## Set effective date
+            FLE.Effective_From = EffectiveDate
+            
             ## Append the new entry to the list
-            FL_List.append(FL_Entry)
+            FL_List.append(FLE)
 
     ## Return the effective date and the list, cutting off the first entry
-    return (EffectiveDate, FL_List)
+    return FL_List
 
-ParseHTML(ReadListHTMLFromFilepath(Test_Page))
-pass
+def GetLatestFL(): return ParseHTML(GetCurrentListHTML())
+
+def UpdateDB(DatabasePath, FL_List, Testing = True):
+    if Testing:
+        SQLTable = 'Master_List_Backup'
+    else:
+        SQLTable = 'Master_List'
+        
+    SQLConnection = sqlite3.connect(DatabasePath)
+    SQLCursor = SQLConnection.cursor()
+    for record in FL_List:
+        
+        ## Check to see if the record exists first
+        Record_Exists = '''SELECT * FROM {Table} WHERE (
+            Card_Type=? AND
+            Card_Name=? AND 
+            Status_Advanced=? AND 
+            Status_Traditional=? AND
+            Remarks=? AND
+            Database_Link=? AND
+            Effective_From=? 
+            )'''.format(Table = SQLTable)
+    
+        RecordTuple = record.ToTuple()
+        Entry = SQLCursor.execute(Record_Exists, RecordTuple).fetchone()
+        if Entry is not None:
+            raise Exception("Record already exists; this list has probably already been added.")
+        else:
+            Record_Insert = '''INSERT INTO {Table}(
+                Card_Type, 
+                Card_Name, 
+                Status_Advanced, 
+                Status_Traditional, 
+                Remarks, 
+                Database_Link, 
+                Effective_From
+                )
+            VALUES
+                (?,?,?,?,?,?,?);
+            '''.format(Table = SQLTable)
+            try:
+                SQLCursor.execute(Record_Insert, record.ToTuple())
+            except Exception as e:
+                print(e)
+                SQLConnection.close()
+                quit()
+    SQLConnection.commit()
+    SQLConnection.close()
+    
+def DeleteRecentBanlist(DatabasePath, Testing = True):
+    #Effective_From = '2021-07-01'
+    if Testing:
+        SQLTable = 'Master_List_Backup'
+    else:
+        SQLTable = 'Master_List'
+        
+    SQLConnection = sqlite3.connect(DatabasePath)
+    SQLCursor = SQLConnection.cursor()
+    Record_Delete = "DELETE FROM {Table} WHERE Effective_From = '2021-07-01'".format(Table = SQLTable)
+    try:
+        SQLCursor.execute(Record_Delete)
+    except Exception as e:
+        print(e)
+        SQLConnection.close()
+        quit()
+    SQLConnection.commit()
+    SQLConnection.close()
+
+#DeleteRecentBanlist(dbpath)
+UpdateDB(dbpath, GetLatestFL(), False)
